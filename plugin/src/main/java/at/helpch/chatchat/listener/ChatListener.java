@@ -7,11 +7,13 @@ import at.helpch.chatchat.channel.ChatChannel;
 import at.helpch.chatchat.util.ChannelUtils;
 import at.helpch.chatchat.util.FormatUtils;
 import at.helpch.chatchat.util.MessageProcessor;
+import io.papermc.paper.event.player.AsyncChatEvent;
+import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
-import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
@@ -28,17 +30,15 @@ public final class ChatListener implements Listener {
         this.plugin = plugin;
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-    public void onChat(final AsyncPlayerChatEvent event) {
-        try {
-            event.getRecipients().clear();
-        } catch (UnsupportedOperationException ignored) {
-            // a plugin is doing something weird so all we can do is cancel
-            event.setCancelled(true);
-        }
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onChat(final AsyncChatEvent event) {
+        // Clear recipients to handle them through our custom system
+        event.viewers().clear();
 
-        event.setMessage(cleanseMessage(event.getMessage()));
-
+        // Convert Component message to String for processing
+        final var originalMessage = PlainTextComponentSerializer.plainText().serialize(event.message());
+        final var cleanedMessage = cleanseMessage(originalMessage);
+        
         final var player = event.getPlayer();
         final var user = (ChatUser) plugin.usersHolder().getUser(player);
 
@@ -51,11 +51,11 @@ public final class ChatListener implements Listener {
         final var channelByPrefix =
             ChannelUtils.findChannelByPrefix(
                 List.copyOf(plugin.configManager().channels().channels().values()),
-                event.getMessage());
+                cleanedMessage);
 
         final var message = channelByPrefix.isEmpty() || !channelByPrefix.get().isUsableBy(user)
-            ? event.getMessage()
-            : event.getMessage().replaceFirst(Pattern.quote(channelByPrefix.get().messagePrefix()), "");
+            ? cleanedMessage
+            : cleanedMessage.replaceFirst(Pattern.quote(channelByPrefix.get().messagePrefix()), "");
 
         var channel = channelByPrefix.isEmpty() || !channelByPrefix.get().isUsableBy(user)
             ? user.channel()
@@ -78,14 +78,24 @@ public final class ChatListener implements Listener {
         // We switch the user to the channel here so that the console can parse the correct channel prefix
         user.channel(channel);
 
-        event.setMessage(LegacyComponentSerializer.legacySection().serialize(
-            MessageProcessor.processMessage(plugin, user, ConsoleUser.INSTANCE, message)
+        // Update the event message with processed content
+        event.message(LegacyComponentSerializer.legacySection().deserialize(
+            LegacyComponentSerializer.legacySection().serialize(
+                MessageProcessor.processMessage(plugin, user, ConsoleUser.INSTANCE, message)
+            )
         ));
 
         try {
-            event.setFormat(LegacyComponentSerializer.legacySection().serialize(
-                FormatUtils.parseConsoleFormat(consoleFormat, player)
-            ));
+            // Set the renderer for console formatting
+            final var formatComponent = FormatUtils.parseConsoleFormat(consoleFormat, player);
+            final var formatString = LegacyComponentSerializer.legacySection().serialize(formatComponent);
+            
+            event.renderer((source, sourceDisplayName, eventMessage, viewer) -> {
+                final var messageString = LegacyComponentSerializer.legacySection().serialize(eventMessage);
+                // Use String.format to insert the message into the format
+                final var formattedString = String.format(formatString, player.getName(), messageString);
+                return LegacyComponentSerializer.legacySection().deserialize(formattedString);
+            });
         } catch (UnknownFormatConversionException exception) {
             plugin.getLogger().severe(
                 "Your console format contains illegal characters: '%" +
@@ -103,7 +113,7 @@ public final class ChatListener implements Listener {
         // Cancel the event if the message doesn't end up being sent
         // This only happens if the message contains illegal characters or if the ChatChatEvent is canceled.
         if (!event.isCancelled() && !sent) {
-            event.setCancelled(false);
+            event.setCancelled(true);
         }
         user.channel(oldChannel);
     }
