@@ -33,7 +33,13 @@ public final class ChatListener implements Listener {
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onChat(final AsyncChatEvent event) {
         // Clear recipients to handle them through our custom system
-        event.viewers().clear();
+        try {
+            event.viewers().clear();
+        } catch (UnsupportedOperationException ignored) {
+            // a plugin is doing something weird so all we can do is cancel
+            event.setCancelled(true);
+            return;
+        }
 
         // Convert Component message to String for processing
         final var originalMessage = PlainTextComponentSerializer.plainText().serialize(event.message());
